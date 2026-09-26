@@ -6,12 +6,15 @@ import { caveStore } from '@/stores/caveStore'
 import { segmentStore } from '@/stores/segmentStore'
 import { stationStore } from '@/stores/stationStore'
 import { sketchStore } from '@/stores/sketchStore'
+import { reviewStore } from '@/stores/reviewStore'
+import { segmentReviewInfo } from '@/utils/review'
 
 const route = useRoute()
 const caveState = useStore(caveStore)
 const segmentState = useStore(segmentStore)
 const stationState = useStore(stationStore)
 const sketchState = useStore(sketchStore)
+const reviewState = useStore(reviewStore)
 
 const menus = [
   { path: '/caves', label: '洞穴清单', icon: 'Files' },
@@ -27,7 +30,13 @@ const stats = computed(() => [
   { label: '洞穴', value: caveState.caves.filter((cave) => !cave.archived).length },
   { label: '洞段', value: segmentState.segments.length },
   { label: '测点', value: stationState.stations.length },
-  { label: '草图', value: sketchState.sketches.length }
+  { label: '草图', value: sketchState.sketches.length },
+  {
+    label: '复核待办',
+    value: segmentState.segments.filter(
+      (segment) => segmentReviewInfo(segment.id, stationState.stations, reviewState.reviews).todo
+    ).length
+  }
 ])
 
 onMounted(async () => {
@@ -35,6 +44,7 @@ onMounted(async () => {
   await segmentStore.getState().hydrate()
   await stationStore.getState().hydrate()
   await sketchStore.getState().hydrate()
+  await reviewStore.getState().hydrate()
 })
 </script>
 

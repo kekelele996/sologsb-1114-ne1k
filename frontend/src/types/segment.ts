@@ -28,8 +28,8 @@ export interface Segment {
   avgHeight: number
   /** 坡度趋势描述 */
   slopeTrend: string
-  /** 是否已闭合 */
-  closed: boolean
+  /** （已废弃）旧版手动闭合标记；复核状态以复测台账推导为准，见 utils/review.ts */
+  closed?: boolean
   /** 草图序号 */
   sketchNo: string
 }

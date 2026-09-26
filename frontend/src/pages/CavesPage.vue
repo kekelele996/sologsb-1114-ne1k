@@ -7,11 +7,14 @@ import { useStore } from '@/hooks/usePersistentStore'
 import { caveStore } from '@/stores/caveStore'
 import { segmentStore } from '@/stores/segmentStore'
 import { stationStore } from '@/stores/stationStore'
+import { reviewStore } from '@/stores/reviewStore'
+import { segmentReviewInfo } from '@/utils/review'
 import { uid } from '@/utils/id'
 
 const caveState = useStore(caveStore)
 const segmentState = useStore(segmentStore)
 const stationState = useStore(stationStore)
+const reviewState = useStore(reviewStore)
 
 const showArchived = ref(false)
 const dialogVisible = ref(false)
@@ -51,6 +54,18 @@ function lastSurveyDate(caveId: string): string {
   if (dates.length === 0) return '暂无测点'
   return dates.sort()[dates.length - 1]
 }
+
+/** 洞穴的复核待办数：下属洞段中状态为「待复核 / 待复测」的段数 */
+function reviewTodoCount(caveId: string): number {
+  return segmentsOf(caveId).filter(
+    (segment) => segmentReviewInfo(segment.id, stationState.stations, reviewState.reviews).todo
+  ).length
+}
+
+/** 清单内全部洞穴的复核待办汇总 */
+const totalTodoCount = computed(() =>
+  visibleCaves.value.reduce((sum, cave) => sum + reviewTodoCount(cave.id), 0)
+)
 
 function resetForm(): void {
   form.name = ''
@@ -135,11 +150,14 @@ async function removeCave(cave: Cave): Promise<void> {
       <div>
         <h2 class="page-title">洞穴清单</h2>
         <p class="page-sub">
-          以洞穴为归属根节点，汇总洞段总长、洞段数量与最近测量日期；删除前会校验下级记录数。
+          以洞穴为归属根节点，汇总洞段总长、洞段数量、最近测量日期与复核待办数；删除前会校验下级记录数。
         </p>
       </div>
-      <div>
-        <el-switch v-model="showArchived" active-text="显示已归档" style="margin-right: 12px" />
+      <div class="head-actions">
+        <el-tag :type="totalTodoCount > 0 ? 'danger' : 'success'" effect="plain">
+          复核待办 {{ totalTodoCount }} 段
+        </el-tag>
+        <el-switch v-model="showArchived" active-text="显示已归档" />
         <el-button type="primary" @click="openCreate">
           <el-icon><Plus /></el-icon>新建洞穴
         </el-button>
@@ -173,6 +191,10 @@ async function removeCave(cave: Cave): Promise<void> {
           <div class="metric">
             <span>最近测量</span>
             <b>{{ lastSurveyDate(cave.id) }}</b>
+          </div>
+          <div class="metric" :class="{ 'is-todo': reviewTodoCount(cave.id) > 0 }">
+            <span>复核待办</span>
+            <b>{{ reviewTodoCount(cave.id) }} 段</b>
           </div>
         </div>
         <el-descriptions :column="1" size="small" border class="desc">
@@ -284,6 +306,17 @@ async function removeCave(cave: Cave): Promise<void> {
 .metric b {
   font-size: 14px;
   color: #1f3a4d;
+}
+.metric.is-todo {
+  background: #fdf2f2;
+}
+.metric.is-todo b {
+  color: #c0392b;
+}
+.head-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 .desc {
   margin-bottom: 12px;

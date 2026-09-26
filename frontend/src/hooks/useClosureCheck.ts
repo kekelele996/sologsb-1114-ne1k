@@ -1,13 +1,13 @@
 import { computed, type Ref } from 'vue'
 import type { ClosureResult, Station } from '@/types'
-import { computeClosure } from '@/utils/survey'
+import { CLOSURE_THRESHOLD, computeClosure } from '@/utils/survey'
 
 /**
  * 输入某个洞段的测点序列，返回闭合差与误差等级。
  * @param stations 测点序列（响应式）
  * @param threshold 闭合差阈值（米）
  */
-export function useClosureCheck(stations: Ref<Station[]>, threshold = 0.25): {
+export function useClosureCheck(stations: Ref<Station[]>, threshold = CLOSURE_THRESHOLD): {
   closure: Ref<number>
   result: Ref<ClosureResult>
   over: Ref<boolean>

@@ -1,23 +1,24 @@
 import { onUnmounted, reactive } from 'vue'
 import type { StoreApi } from 'zustand/vanilla'
 import Dexie, { type Table } from 'dexie'
-import type { Cave, Segment, Sketch, Station } from '@/types'
-import { computeHorizontal, computeVertical } from '@/utils/survey'
+import type { Cave, Review, Segment, Sketch, Station } from '@/types'
+import { computeClosure, computeHorizontal, computeVertical } from '@/utils/survey'
 
 /** IndexedDB 数据结构版本号（升级迁移时使用） */
-export const SCHEMA_VERSION = 2
+export const SCHEMA_VERSION = 3
 
 export interface MetaRow {
   key: string
   value: number
 }
 
-/** Dexie 封装：洞穴 / 洞段 / 测点 / 草图 四张表 + 元数据表 */
+/** Dexie 封装：洞穴 / 洞段 / 测点 / 草图 / 复核台账 五张表 + 元数据表 */
 class CaveSurveyDb extends Dexie {
   caves!: Table<Cave, string>
   segments!: Table<Segment, string>
   stations!: Table<Station, string>
   sketches!: Table<Sketch, string>
+  reviews!: Table<Review, string>
   meta!: Table<MetaRow, string>
 
   constructor() {
@@ -30,7 +31,7 @@ class CaveSurveyDb extends Dexie {
       meta: 'key'
     })
     // v2：旧版测点记录缺少水平距/垂距，迁移时由斜距 + 倾角补齐
-    this.version(SCHEMA_VERSION)
+    this.version(2)
       .stores({
         caves: 'id, name, region, archived',
         segments: 'id, caveId, code, type',
@@ -51,6 +52,15 @@ class CaveSurveyDb extends Dexie {
             }
           })
       })
+    // v3：新增复核台账表 reviews（复测日期、负责人、结论、备注），旧洞段的“已闭合”手勾不再作数
+    this.version(SCHEMA_VERSION).stores({
+      caves: 'id, name, region, archived',
+      segments: 'id, caveId, code, type',
+      stations: 'id, segmentId, code, date',
+      sketches: 'id, segmentId, code, mergeOrder',
+      reviews: 'id, segmentId, date',
+      meta: 'key'
+    })
   }
 }
 
@@ -97,7 +107,7 @@ export function useStore<T extends object>(store: StoreApi<T>): T {
 
 /**
  * 首次打开时写入一套示例洞穴数据，保证各页面进入即有事可做。
- * 只在四张表都为空时执行一次。
+ * 只在五张表都为空时执行一次。
  */
 export async function seedDemoData(): Promise<void> {
   const caveCount = await db.caves.count()
@@ -149,12 +159,13 @@ export async function seedDemoData(): Promise<void> {
       avgWidth: 1.6,
       avgHeight: 12.5,
       slopeTrend: '陡降 68°',
+      // 旧版遗留的手动闭合标记：没有复测记录，复核状态仍应为「待复核」
       closed: true,
       sketchNo: 'S-02'
     }
   ])
 
-  await db.stations.bulkPut([
+  const stations: Station[] = [
     {
       id: 'st_demo_001',
       segmentId: segmentA,
@@ -184,6 +195,21 @@ export async function seedDemoData(): Promise<void> {
       date: today,
       isClosurePoint: true,
       note: '本段末站，已与 C-02 起点核对'
+    }
+  ]
+  await db.stations.bulkPut(stations)
+
+  // 示例复核台账：C-01 闭合差超限，复测结论不通过，状态保持「待复测」
+  await db.reviews.bulkPut([
+    {
+      id: 'rv_demo_001',
+      segmentId: segmentA,
+      date: today,
+      reviewer: '覃羽',
+      conclusion: '不通过',
+      closure: computeClosure(stations).closure,
+      note: '闭合差超限，P2 方位角存疑，安排复测后再登记结论',
+      createdAt: new Date().toISOString()
     }
   ])
 

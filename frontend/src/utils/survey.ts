@@ -1,5 +1,8 @@
 import type { ClosureResult, Station } from '@/types'
 
+/** 闭合差默认阈值（米） */
+export const CLOSURE_THRESHOLD = 0.25
+
 /** 角度转弧度 */
 export function toRadians(deg: number): number {
   return (deg * Math.PI) / 180
@@ -113,7 +116,7 @@ export function stakeRangeOverlap(a1: number, a2: number, b1: number, b2: number
  * 闭合差：把每站的方位角与水平距分解为东向/北向增量，
  * 导线闭合差即累计位移向量的模。
  */
-export function computeClosure(stations: Station[], threshold = 0.25): ClosureResult {
+export function computeClosure(stations: Station[], threshold = CLOSURE_THRESHOLD): ClosureResult {
   let east = 0
   let north = 0
   for (const station of stations) {

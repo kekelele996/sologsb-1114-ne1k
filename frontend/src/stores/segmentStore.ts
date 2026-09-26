@@ -10,7 +10,6 @@ export interface SegmentState {
   remove: (id: string) => Promise<void>
   removeByCave: (caveId: string) => Promise<void>
   bulkSetType: (ids: string[], type: SegmentType) => Promise<void>
-  bulkSetClosed: (ids: string[], closed: boolean) => Promise<void>
 }
 
 export const segmentStore = createStore<SegmentState>((set, get) => ({
@@ -41,14 +40,6 @@ export const segmentStore = createStore<SegmentState>((set, get) => ({
       get()
         .segments.filter((item) => ids.includes(item.id))
         .map((item) => syncPut<Segment>(db.segments, { ...item, type }))
-    )
-    await get().hydrate()
-  },
-  bulkSetClosed: async (ids, closed) => {
-    await Promise.all(
-      get()
-        .segments.filter((item) => ids.includes(item.id))
-        .map((item) => syncPut<Segment>(db.segments, { ...item, closed }))
     )
     await get().hydrate()
   }

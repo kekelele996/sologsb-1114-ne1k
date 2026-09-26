@@ -1,21 +1,32 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import type { Station } from '@/types'
+import type { Review, ReviewConclusion, Station } from '@/types'
 import BearingInput from '@/components/common/BearingInput.vue'
 import ClosureBadge from '@/components/common/ClosureBadge.vue'
+import ReviewStatusTag from '@/components/common/ReviewStatusTag.vue'
 import SegmentTag from '@/components/common/SegmentTag.vue'
 import { useStore } from '@/hooks/usePersistentStore'
 import { useClosureCheck } from '@/hooks/useClosureCheck'
 import { segmentStore } from '@/stores/segmentStore'
 import { stationStore } from '@/stores/stationStore'
+import { reviewStore } from '@/stores/reviewStore'
 import { caveStore } from '@/stores/caveStore'
-import { computeHorizontal, computeVertical, formatDms, isValidBearing, isValidDip } from '@/utils/survey'
+import {
+  computeClosure,
+  computeHorizontal,
+  computeVertical,
+  formatDms,
+  isValidBearing,
+  isValidDip
+} from '@/utils/survey'
+import { segmentReviewInfo } from '@/utils/review'
 import { nextCode, uid } from '@/utils/id'
 
 const caveState = useStore(caveStore)
 const segmentState = useStore(segmentStore)
 const stationState = useStore(stationStore)
+const reviewState = useStore(reviewStore)
 
 const selectedCaveId = ref<string>(caveState.caves[0]?.id ?? '')
 const selectedSegmentId = ref<string>('')
@@ -31,6 +42,14 @@ const form = reactive({
   surveyor: '',
   date: new Date().toISOString().slice(0, 10),
   isClosurePoint: false,
+  note: ''
+})
+
+/** 复核台账登记表单 */
+const reviewForm = reactive({
+  date: new Date().toISOString().slice(0, 10),
+  reviewer: '',
+  conclusion: '通过' as ReviewConclusion,
   note: ''
 })
 
@@ -68,6 +87,21 @@ const { result: closureResult, over: closureOver } = useClosureCheck(closureInpu
 
 const previewHorizontal = computed(() => computeHorizontal(form.dip, form.slopeDistance))
 const previewVertical = computed(() => computeVertical(form.dip, form.slopeDistance))
+
+/** 复核台账只依据已保存测点：测点增删改动后实时重算闭合差并推导状态 */
+const reviewInfo = computed(() =>
+  segmentReviewInfo(selectedSegmentId.value, stationState.stations, reviewState.reviews)
+)
+
+const segmentReviews = computed(() =>
+  reviewState.reviews.filter((review) => review.segmentId === selectedSegmentId.value)
+)
+
+const statusHint = computed(() => {
+  if (reviewInfo.value.status === '待复测') return '闭合差超限，请先复测读数，把闭合差压回阈值内'
+  if (reviewInfo.value.status === '待复核') return '尚无「通过」的复测结论，请登记复核台账'
+  return '结论通过且最新闭合差在阈值内，复核完成'
+})
 
 /** 异常读数：方位角或倾角超范围、斜距非正、水平距大于斜距 */
 function isAbnormal(station: Station): boolean {
@@ -112,6 +146,9 @@ watch(
   () => {
     editingId.value = null
     refreshDefaultCode()
+    // 复核负责人默认取归属洞穴的测绘负责人，可改
+    const cave = caveState.caves.find((item) => item.id === currentSegment.value?.caveId)
+    reviewForm.reviewer = cave?.surveyor ?? ''
   },
   { immediate: true }
 )
@@ -183,6 +220,50 @@ async function removeStation(station: Station): Promise<void> {
   await stationStore.getState().remove(station.id)
   ElMessage.success('测点已删除')
 }
+
+/** 登记复测结论：留痕日期、负责人、结论、备注与登记时闭合差 */
+async function submitReview(): Promise<void> {
+  if (!selectedSegmentId.value) {
+    ElMessage.warning('请先选择洞段')
+    return
+  }
+  if (!reviewForm.date) {
+    ElMessage.warning('请选择复测日期')
+    return
+  }
+  if (!reviewForm.reviewer.trim()) {
+    ElMessage.warning('请填写复核负责人')
+    return
+  }
+  const closure = computeClosure(segmentStations.value)
+  const review: Review = {
+    id: uid('rv'),
+    segmentId: selectedSegmentId.value,
+    date: reviewForm.date,
+    reviewer: reviewForm.reviewer.trim(),
+    conclusion: reviewForm.conclusion,
+    closure: closure.closure,
+    note: reviewForm.note.trim(),
+    createdAt: new Date().toISOString()
+  }
+  await reviewStore.getState().save(review)
+  reviewForm.note = ''
+  if (review.conclusion === '通过' && !closure.over) {
+    ElMessage.success('复测结论已登记，洞段复核完成')
+  } else if (review.conclusion === '通过') {
+    ElMessage.warning('复测结论已登记；闭合差仍超限，状态保持「待复测」')
+  } else {
+    ElMessage.success('复测结论已登记')
+  }
+}
+
+async function removeReview(review: Review): Promise<void> {
+  await ElMessageBox.confirm(`确认删除 ${review.date} 由「${review.reviewer}」登记的复测记录？`, '删除确认', {
+    type: 'warning'
+  })
+  await reviewStore.getState().remove(review.id)
+  ElMessage.success('复测记录已删除')
+}
 </script>
 
 <template>
@@ -209,7 +290,8 @@ async function removeStation(station: Station): Promise<void> {
           :value="segment.id"
         />
       </el-select>
-      <SegmentTag v-if="currentSegment" :type="currentSegment.type" :closed="currentSegment.closed" size="small" />
+      <SegmentTag v-if="currentSegment" :type="currentSegment.type" size="small" />
+      <ReviewStatusTag v-if="currentSegment" :status="reviewInfo.status" size="small" />
       <el-button :disabled="!selectedSegmentId" @click="refreshDefaultCode">重算下一桩号</el-button>
     </div>
 
@@ -328,6 +410,73 @@ async function removeStation(station: Station): Promise<void> {
         </template>
       </el-table-column>
     </el-table>
+
+    <el-card v-if="currentSegment" shadow="never" class="review-card">
+      <template #header>
+        <div class="review-head">
+          <span>复核台账 · {{ currentSegment.code }}</span>
+          <ReviewStatusTag :status="reviewInfo.status" size="small" />
+          <span class="muted">{{ statusHint }}</span>
+        </div>
+      </template>
+      <el-form label-width="96px">
+        <el-row :gutter="16">
+          <el-col :span="6">
+            <el-form-item label="复测日期" required>
+              <el-date-picker v-model="reviewForm.date" type="date" value-format="YYYY-MM-DD" style="width: 100%" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="6">
+            <el-form-item label="负责人" required>
+              <el-input v-model="reviewForm.reviewer" placeholder="复核负责人" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="6">
+            <el-form-item label="复测结论">
+              <el-radio-group v-model="reviewForm.conclusion">
+                <el-radio-button value="通过">通过</el-radio-button>
+                <el-radio-button value="不通过">不通过</el-radio-button>
+              </el-radio-group>
+            </el-form-item>
+          </el-col>
+          <el-col :span="6">
+            <el-form-item label="当前闭合差">
+              <el-tag :type="reviewInfo.closure.over ? 'danger' : 'success'" effect="plain">
+                {{ reviewInfo.closure.closure.toFixed(3) }} m / 阈值 {{ reviewInfo.closure.threshold }} m
+              </el-tag>
+            </el-form-item>
+          </el-col>
+        </el-row>
+        <el-form-item label="备注">
+          <el-input v-model="reviewForm.note" type="textarea" :rows="2" placeholder="复测情况、误差分配或遗留问题" />
+        </el-form-item>
+        <div class="actions">
+          <el-button type="primary" @click="submitReview">登记复测结论</el-button>
+          <span class="muted">只有结论为「通过」且最新闭合差回到阈值内，洞段状态才会完成</span>
+        </div>
+      </el-form>
+      <el-table :data="segmentReviews" border stripe size="small">
+        <el-table-column prop="date" label="复测日期" width="110" />
+        <el-table-column prop="reviewer" label="负责人" width="100" />
+        <el-table-column label="结论" width="90">
+          <template #default="{ row }: { row: Review }">
+            <el-tag :type="row.conclusion === '通过' ? 'success' : 'danger'" size="small" effect="plain">
+              {{ row.conclusion }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="登记时闭合差" width="120">
+          <template #default="{ row }: { row: Review }">{{ row.closure.toFixed(3) }} m</template>
+        </el-table-column>
+        <el-table-column prop="note" label="备注" min-width="180" show-overflow-tooltip />
+        <el-table-column label="操作" width="80" fixed="right">
+          <template #default="{ row }: { row: Review }">
+            <el-button link type="danger" size="small" @click="removeReview(row)">删除</el-button>
+          </template>
+        </el-table-column>
+        <template #empty>暂无复测记录，洞段状态保持「待复核」</template>
+      </el-table>
+    </el-card>
   </div>
 </template>
 
@@ -352,6 +501,15 @@ async function removeStation(station: Station): Promise<void> {
 }
 .alert {
   margin-bottom: 12px;
+}
+.review-card {
+  margin-top: 16px;
+  border-radius: 12px;
+}
+.review-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 :deep(.abnormal-row) {
   background: #fdf2f2 !important;

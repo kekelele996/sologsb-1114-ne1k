@@ -61,13 +61,13 @@ sologsb-1114/
 │   ├── nginx.conf              # try_files 前端路由回落 + gzip
 │   ├── public/favicon.svg
 │   └── src/
-│       ├── types/              # cave.ts / segment.ts / station.ts / sketch.ts / index.ts
-│       ├── stores/             # caveStore / segmentStore / stationStore / sketchStore（Zustand）
-│       ├── components/common/  # SegmentTag / BearingInput / ClosureBadge / GridCanvas
+│       ├── types/              # cave.ts / segment.ts / station.ts / sketch.ts / review.ts / index.ts
+│       ├── stores/             # caveStore / segmentStore / stationStore / sketchStore / reviewStore（Zustand）
+│       ├── components/common/  # SegmentTag / ReviewStatusTag / BearingInput / ClosureBadge / GridCanvas
 │       ├── hooks/              # usePersistentStore / useClosureCheck
 │       ├── pages/              # CavesPage / SegmentsPage / StationsPage / SketchPage / MergePage
 │       ├── router/index.ts
-│       └── utils/              # survey.ts / export.ts / id.ts
+│       └── utils/              # survey.ts / review.ts / export.ts / id.ts
 ```
 
 ## 五、数据模型与存储
@@ -75,21 +75,23 @@ sologsb-1114/
 | 模型 | 说明 | Dexie 表 |
 | --- | --- | --- |
 | Cave 洞穴 | 归属根节点：洞名、行政区、经纬度、海拔、发育层位、已知总长、负责人等 | `caves` |
-| Segment 洞段 | 起止桩号、类型（竖井/廊道/厅堂/裂隙/水道）、平均宽高、是否闭合 | `segments` |
+| Segment 洞段 | 起止桩号、类型（竖井/廊道/厅堂/裂隙/水道）、平均宽高；复核状态由台账推导 | `segments` |
 | Station 测点 | 方位角、倾角、斜距 → 自动推算水平距/垂距，累计闭合差 | `stations` |
 | Sketch 草图 | 格数、比例、绘制人、拼合顺序号、桩号对齐锚点 | `sketches` |
+| Review 复核台账 | 复测日期、负责人、结论（通过/不通过）、登记时闭合差、备注 | `reviews` |
 
 - 数据库名 `gbcavesurvey`，`meta` 表保存 `schemaVersion`；
 - `version(2)` 升级迁移会把旧版测点记录由「斜距 + 倾角」补齐 `horizontalDistance` / `verticalDistance`；
+- `version(3)` 新增复核台账表 `reviews`，旧洞段的「已闭合」手勾字段保留但不再作数；
 - 数据仅存于浏览器本地，容器无状态、不挂载命名卷，清除浏览器数据即清空。
 
 ## 六、主要页面
 
 | 路由 | 功能 |
 | --- | --- |
-| `/caves` | 洞穴清单：卡片展示实测/已知总长、洞段数、最近测量日期，支持新建、编辑、归档、删除（删除前校验下级洞段数） |
-| `/segments` | 洞段编目表：按桩号区间/类型/洞穴筛选，批量调整洞段类型与闭合标记，自动累计总长 |
-| `/stations` | 测点读数录入：方位角/倾角专用输入（度分秒 ⇄ 十进制度），自动推算水平距垂距，实时闭合差徽标，异常读数整行高亮，支持连续录入下一站 |
+| `/caves` | 洞穴清单：卡片展示实测/已知总长、洞段数、最近测量日期与复核待办数，页头汇总全部待办，支持新建、编辑、归档、删除（删除前校验下级洞段数） |
+| `/segments` | 洞段编目表：按桩号区间/类型/洞穴筛选，批量调整洞段类型，实时重算闭合差并展示复核状态（待复核/待复测/已完成）与最近复测日期，支持「只看待办」过滤，自动累计总长 |
+| `/stations` | 测点读数录入：方位角/倾角专用输入（度分秒 ⇄ 十进制度），自动推算水平距垂距，实时闭合差徽标，异常读数整行高亮，支持连续录入下一站；复核台账登记复测日期、负责人、结论与备注并留痕历史 |
 | `/sketch` | 草图工作台：坐标纸网格上绘制测点折线、标注桩号与倾角箭头，支持草图基准方位旋转与草图记录管理 |
 | `/merge` | 图幅拼合视图：拖动图幅按相邻边缘吸附、按桩号锚点一键对齐，输出可调整的拼合顺序表并支持 CSV 导出 |
 
@@ -98,3 +100,13 @@ sologsb-1114/
 - 水平距 = 斜距 × cos(倾角)，垂距 = 斜距 × sin(倾角)；
 - 闭合差 f = √(ΣΔE² + ΣΔN²)，默认阈值 0.25 m，超限时徽标变红并可展开计算过程；
 - 方位角范围 0°–360°，倾角范围 -90°–90°，越界读数会被标记为异常。
+
+## 八、复核台账与状态推导
+
+- 测点增删或改动后，洞段闭合差实时重算，洞段编目、洞穴清单与侧栏待办数同步刷新；
+- 复核状态不允许手勾，由最新闭合差与复测结论推导：
+  - 闭合差超限 → **待复测**；
+  - 闭合差达标但缺少「通过」的复测结论 → **待复核**（旧洞段的「已闭合」开关不再沿用）；
+  - 最新结论为「通过」且最新闭合差回到阈值内 → **已完成**；
+- 待复核与待复测都计入待办，洞穴清单按洞穴汇总待办段数；
+- 测点页可登记复测日期、负责人、结论与备注，台账记录登记时的闭合差快照，可回溯可删除。
