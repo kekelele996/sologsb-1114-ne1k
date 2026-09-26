@@ -216,7 +216,6 @@ function exportMergeTable(): void {
           :key="segment.id"
           :type="segment.type"
           :code="segment.code"
-          :closed="segment.closed"
           size="small"
         />
       </div>

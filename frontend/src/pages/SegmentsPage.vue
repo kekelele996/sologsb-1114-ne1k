@@ -4,19 +4,24 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import type { Segment, SegmentType } from '@/types'
 import { SEGMENT_TYPES, segmentLength } from '@/types'
 import SegmentTag from '@/components/common/SegmentTag.vue'
+import ReviewStatusTag from '@/components/common/ReviewStatusTag.vue'
 import { useStore } from '@/hooks/usePersistentStore'
 import { caveStore } from '@/stores/caveStore'
 import { segmentStore } from '@/stores/segmentStore'
 import { stationStore } from '@/stores/stationStore'
+import { resurveyStore } from '@/stores/resurveyStore'
+import { resolveSegmentReview, type SegmentReview } from '@/utils/review'
 import { stakeRangeOverlap, stakeToNumber } from '@/utils/survey'
 import { uid } from '@/utils/id'
 
 const caveState = useStore(caveStore)
 const segmentState = useStore(segmentStore)
 const stationState = useStore(stationStore)
+const resurveyState = useStore(resurveyStore)
 
 const filterCaveId = ref<string>('')
 const filterType = ref<SegmentType | ''>('')
+const onlyTodo = ref(false)
 const rangeStart = ref<number | undefined>(undefined)
 const rangeEnd = ref<number | undefined>(undefined)
 const selectedIds = ref<string[]>([])
@@ -34,14 +39,19 @@ const form = reactive({
   avgWidth: 1.5,
   avgHeight: 2,
   slopeTrend: '',
-  closed: false,
   sketchNo: ''
 })
+
+/** 单个洞段的复核汇总（闭合差随测点增删改实时重算） */
+function reviewOf(segmentId: string): SegmentReview {
+  return resolveSegmentReview(segmentId, stationState.stations, resurveyState.resurveys)
+}
 
 const filtered = computed(() =>
   segmentState.segments.filter((segment) => {
     if (filterCaveId.value && segment.caveId !== filterCaveId.value) return false
     if (filterType.value && segment.type !== filterType.value) return false
+    if (onlyTodo.value && !reviewOf(segment.id).todo) return false
     if (rangeStart.value !== undefined || rangeEnd.value !== undefined) {
       const lo = rangeStart.value ?? Number.NEGATIVE_INFINITY
       const hi = rangeEnd.value ?? Number.POSITIVE_INFINITY
@@ -54,6 +64,8 @@ const filtered = computed(() =>
 const totalLength = computed(() =>
   Math.round(filtered.value.reduce((sum, segment) => sum + segmentLength(segment), 0) * 10) / 10
 )
+
+const todoCount = computed(() => filtered.value.filter((segment) => reviewOf(segment.id).todo).length)
 
 function caveName(caveId: string): string {
   return caveState.caves.find((cave) => cave.id === caveId)?.name ?? '未归属洞穴'
@@ -73,7 +85,6 @@ function resetForm(): void {
   form.avgWidth = 1.5
   form.avgHeight = 2
   form.slopeTrend = ''
-  form.closed = false
   form.sketchNo = ''
 }
 
@@ -92,7 +103,6 @@ function openEdit(segment: Segment): void {
   form.avgWidth = segment.avgWidth
   form.avgHeight = segment.avgHeight
   form.slopeTrend = segment.slopeTrend
-  form.closed = segment.closed
   form.sketchNo = segment.sketchNo
   dialogVisible.value = true
 }
@@ -121,7 +131,6 @@ async function submit(): Promise<void> {
     avgWidth: Number(form.avgWidth) || 0,
     avgHeight: Number(form.avgHeight) || 0,
     slopeTrend: form.slopeTrend.trim(),
-    closed: form.closed,
     sketchNo: form.sketchNo.trim()
   }
   await segmentStore.getState().save(segment)
@@ -138,19 +147,15 @@ async function applyBatchType(): Promise<void> {
   ElMessage.success(`已把 ${selectedIds.value.length} 个洞段调整为「${batchType.value}」`)
 }
 
-async function applyBatchClosed(closed: boolean): Promise<void> {
-  if (selectedIds.value.length === 0) {
-    ElMessage.warning('请先勾选要调整的洞段')
-    return
-  }
-  await segmentStore.getState().bulkSetClosed(selectedIds.value, closed)
-  ElMessage.success(closed ? '已标记为闭合' : '已取消闭合标记')
-}
-
 async function removeSegment(segment: Segment): Promise<void> {
   const count = stationCount(segment.id)
   if (count > 0) {
     ElMessage.error(`洞段「${segment.code}」下仍有 ${count} 个测点，请先清理`)
+    return
+  }
+  const resurveyCount = resurveyState.resurveys.filter((record) => record.segmentId === segment.id).length
+  if (resurveyCount > 0) {
+    ElMessage.error(`洞段「${segment.code}」下仍有 ${resurveyCount} 条复测记录，请先在测点页清理`)
     return
   }
   await ElMessageBox.confirm(`确认删除洞段「${segment.code}」？`, '删除确认', { type: 'warning' })
@@ -165,7 +170,7 @@ async function removeSegment(segment: Segment): Promise<void> {
       <div>
         <h2 class="page-title">洞段编目表</h2>
         <p class="page-sub">
-          按桩号区间筛选洞段、批量调整洞段类型；洞段长度由起止桩号自动计算，并累计为洞穴实测总长。
+          按桩号区间筛选洞段、批量调整洞段类型；闭合差随测点变动实时重算，复核状态由复测台账推导，未完成的洞段计入待办。
         </p>
       </div>
       <el-button type="primary" @click="openCreate">
@@ -186,13 +191,14 @@ async function removeSegment(segment: Segment): Promise<void> {
         <span>—</span>
         <el-input-number v-model="rangeEnd" :min="0" :controls="false" placeholder="止" style="width: 110px" />
       </div>
+      <el-switch v-model="onlyTodo" active-text="只看待办" />
       <el-select v-model="batchType" style="width: 140px">
         <el-option v-for="type in SEGMENT_TYPES" :key="type" :label="type" :value="type" />
       </el-select>
       <el-button type="primary" plain @click="applyBatchType">批量调整类型</el-button>
-      <el-button @click="applyBatchClosed(true)">标记闭合</el-button>
-      <el-button @click="applyBatchClosed(false)">取消闭合</el-button>
-      <el-tag type="info" effect="plain">命中共 {{ filtered.length }} 段 · 合计 {{ totalLength }} m</el-tag>
+      <el-tag :type="todoCount > 0 ? 'danger' : 'info'" effect="plain">
+        命中共 {{ filtered.length }} 段 · 合计 {{ totalLength }} m · 待办 {{ todoCount }} 段
+      </el-tag>
     </div>
 
     <el-table
@@ -211,9 +217,9 @@ async function removeSegment(segment: Segment): Promise<void> {
       <el-table-column label="归属洞穴" min-width="150">
         <template #default="{ row }: { row: Segment }">{{ caveName(row.caveId) }}</template>
       </el-table-column>
-      <el-table-column label="类型" width="170">
+      <el-table-column label="类型" width="130">
         <template #default="{ row }: { row: Segment }">
-          <SegmentTag :type="row.type" :closed="row.closed" size="small" />
+          <SegmentTag :type="row.type" size="small" />
         </template>
       </el-table-column>
       <el-table-column label="桩号区间" min-width="200">
@@ -228,6 +234,28 @@ async function removeSegment(segment: Segment): Promise<void> {
       <el-table-column prop="slopeTrend" label="坡度趋势" width="120" />
       <el-table-column label="测点数" width="90">
         <template #default="{ row }: { row: Segment }">{{ stationCount(row.id) }}</template>
+      </el-table-column>
+      <el-table-column label="闭合差(m)" width="110">
+        <template #default="{ row }: { row: Segment }">
+          <span :class="['closure-num', { over: reviewOf(row.id).closure.over }]">
+            {{ reviewOf(row.id).closure.closure.toFixed(3) }}
+          </span>
+        </template>
+      </el-table-column>
+      <el-table-column label="复核状态" width="130">
+        <template #default="{ row }: { row: Segment }">
+          <ReviewStatusTag :status="reviewOf(row.id).status" size="small" />
+          <el-tag v-if="reviewOf(row.id).todo" type="danger" size="small" effect="plain" class="todo-tag">待办</el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column label="最近复测" width="150">
+        <template #default="{ row }: { row: Segment }">
+          <template v-if="reviewOf(row.id).latest">
+            <div class="mono">{{ reviewOf(row.id).latest!.date }}</div>
+            <div class="muted">{{ reviewOf(row.id).latest!.reviewer }}</div>
+          </template>
+          <span v-else class="muted">未登记</span>
+        </template>
       </el-table-column>
       <el-table-column prop="sketchNo" label="草图序号" width="100" />
       <el-table-column label="操作" width="140" fixed="right">
@@ -293,9 +321,11 @@ async function removeSegment(segment: Segment): Promise<void> {
             </el-form-item>
           </el-col>
           <el-col :span="12">
-            <el-form-item label="是否已闭合">
-              <el-switch v-model="form.closed" />
-            </el-form-item>
+            <el-alert
+              type="info"
+              :closable="false"
+              title="复核状态由测点页登记的复测结论与最新闭合差自动推导，无需手工勾选。"
+            />
           </el-col>
         </el-row>
       </el-form>
@@ -312,5 +342,15 @@ async function removeSegment(segment: Segment): Promise<void> {
   display: flex;
   align-items: center;
   gap: 6px;
+}
+.closure-num {
+  font-variant-numeric: tabular-nums;
+}
+.closure-num.over {
+  color: #c0392b;
+  font-weight: 600;
+}
+.todo-tag {
+  margin-left: 6px;
 }
 </style>

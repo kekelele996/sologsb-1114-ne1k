@@ -7,11 +7,9 @@ const props = withDefaults(
     type: SegmentType
     /** 是否展示洞段编号前缀 */
     code?: string
-    /** 已闭合标记 */
-    closed?: boolean
     size?: 'small' | 'default'
   }>(),
-  { code: '', closed: false, size: 'default' }
+  { code: '', size: 'default' }
 )
 
 const color = computed(() => SEGMENT_TYPE_COLORS[props.type] ?? '#6b7280')
@@ -21,7 +19,6 @@ const color = computed(() => SEGMENT_TYPE_COLORS[props.type] ?? '#6b7280')
   <span class="segment-tag" :class="`is-${size}`" :style="{ '--tag-color': color }">
     <i class="dot" />
     <span class="label">{{ code ? `${code} · ` : '' }}{{ type }}</span>
-    <span v-if="closed" class="closed">已闭合</span>
   </span>
 </template>
 
@@ -48,12 +45,5 @@ const color = computed(() => SEGMENT_TYPE_COLORS[props.type] ?? '#6b7280')
   height: 7px;
   border-radius: 50%;
   background: var(--tag-color);
-}
-.closed {
-  font-size: 11px;
-  padding: 0 5px;
-  border-radius: 4px;
-  background: rgba(46, 125, 50, 0.16);
-  color: #2e7d32;
 }
 </style>

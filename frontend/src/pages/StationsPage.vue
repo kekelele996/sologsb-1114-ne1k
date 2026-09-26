@@ -1,21 +1,26 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import type { Station } from '@/types'
+import type { ResurveyConclusion, ResurveyRecord, Station } from '@/types'
+import { RESURVEY_CONCLUSIONS } from '@/types'
 import BearingInput from '@/components/common/BearingInput.vue'
 import ClosureBadge from '@/components/common/ClosureBadge.vue'
 import SegmentTag from '@/components/common/SegmentTag.vue'
+import ReviewStatusTag from '@/components/common/ReviewStatusTag.vue'
 import { useStore } from '@/hooks/usePersistentStore'
 import { useClosureCheck } from '@/hooks/useClosureCheck'
 import { segmentStore } from '@/stores/segmentStore'
 import { stationStore } from '@/stores/stationStore'
 import { caveStore } from '@/stores/caveStore'
+import { resurveyStore } from '@/stores/resurveyStore'
+import { resolveSegmentReview } from '@/utils/review'
 import { computeHorizontal, computeVertical, formatDms, isValidBearing, isValidDip } from '@/utils/survey'
 import { nextCode, uid } from '@/utils/id'
 
 const caveState = useStore(caveStore)
 const segmentState = useStore(segmentStore)
 const stationState = useStore(stationStore)
+const resurveyState = useStore(resurveyStore)
 
 const selectedCaveId = ref<string>(caveState.caves[0]?.id ?? '')
 const selectedSegmentId = ref<string>('')
@@ -31,6 +36,13 @@ const form = reactive({
   surveyor: '',
   date: new Date().toISOString().slice(0, 10),
   isClosurePoint: false,
+  note: ''
+})
+
+const resurveyForm = reactive({
+  date: new Date().toISOString().slice(0, 10),
+  reviewer: '',
+  conclusion: '通过' as ResurveyConclusion,
   note: ''
 })
 
@@ -65,6 +77,21 @@ const pendingStation = computed<Station>(() => ({
 
 const closureInput = computed<Station[]>(() => [...segmentStations.value, pendingStation.value])
 const { result: closureResult, over: closureOver } = useClosureCheck(closureInput)
+
+/** 仅已保存测点参与的闭合差：复核状态与复测登记快照以它为准 */
+const savedClosureInput = computed<Station[]>(() => segmentStations.value)
+const { result: savedClosureResult } = useClosureCheck(savedClosureInput)
+
+/** 当前洞段复核汇总：测点增删改后状态即时重算 */
+const review = computed(() =>
+  resolveSegmentReview(selectedSegmentId.value, stationState.stations, resurveyState.resurveys)
+)
+
+const segmentResurveys = computed(() =>
+  resurveyState.resurveys
+    .filter((record) => record.segmentId === selectedSegmentId.value)
+    .sort((a, b) => `${b.date}${b.createdAt}`.localeCompare(`${a.date}${a.createdAt}`))
+)
 
 const previewHorizontal = computed(() => computeHorizontal(form.dip, form.slopeDistance))
 const previewVertical = computed(() => computeVertical(form.dip, form.slopeDistance))
@@ -183,6 +210,48 @@ async function removeStation(station: Station): Promise<void> {
   await stationStore.getState().remove(station.id)
   ElMessage.success('测点已删除')
 }
+
+async function submitResurvey(): Promise<void> {
+  if (!selectedSegmentId.value) {
+    ElMessage.warning('请先选择洞段')
+    return
+  }
+  if (!resurveyForm.date) {
+    ElMessage.warning('请选择复测日期')
+    return
+  }
+  if (!resurveyForm.reviewer.trim()) {
+    ElMessage.warning('请填写复核负责人')
+    return
+  }
+  const record: ResurveyRecord = {
+    id: uid('rs'),
+    segmentId: selectedSegmentId.value,
+    date: resurveyForm.date,
+    reviewer: resurveyForm.reviewer.trim(),
+    conclusion: resurveyForm.conclusion,
+    closure: savedClosureResult.value.closure,
+    note: resurveyForm.note.trim(),
+    createdAt: new Date().toISOString()
+  }
+  await resurveyStore.getState().save(record)
+  if (record.conclusion === '通过' && savedClosureResult.value.over) {
+    ElMessage.warning('复测记录已登记，但最新闭合差仍超限，洞段状态保持「超限待复测」')
+  } else {
+    ElMessage.success('复测记录已登记')
+  }
+  resurveyForm.note = ''
+}
+
+async function removeResurvey(record: ResurveyRecord): Promise<void> {
+  await ElMessageBox.confirm(
+    `确认删除 ${record.date} 由 ${record.reviewer} 登记的复测记录？删除后洞段可能回到「待复核」。`,
+    '删除确认',
+    { type: 'warning' }
+  )
+  await resurveyStore.getState().remove(record.id)
+  ElMessage.success('复测记录已删除')
+}
 </script>
 
 <template>
@@ -209,7 +278,8 @@ async function removeStation(station: Station): Promise<void> {
           :value="segment.id"
         />
       </el-select>
-      <SegmentTag v-if="currentSegment" :type="currentSegment.type" :closed="currentSegment.closed" size="small" />
+      <SegmentTag v-if="currentSegment" :type="currentSegment.type" size="small" />
+      <ReviewStatusTag v-if="currentSegment" :status="review.status" size="small" />
       <el-button :disabled="!selectedSegmentId" @click="refreshDefaultCode">重算下一桩号</el-button>
     </div>
 
@@ -328,6 +398,64 @@ async function removeStation(station: Station): Promise<void> {
         </template>
       </el-table-column>
     </el-table>
+
+    <h3 class="section-title">复测台账（{{ segmentResurveys.length }} 条）</h3>
+    <el-card shadow="never" class="form-card">
+      <el-form label-width="96px">
+        <el-row :gutter="16">
+          <el-col :span="6">
+            <el-form-item label="复测日期" required>
+              <el-date-picker v-model="resurveyForm.date" type="date" value-format="YYYY-MM-DD" style="width: 100%" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="6">
+            <el-form-item label="复核负责人" required>
+              <el-input v-model="resurveyForm.reviewer" placeholder="如 覃羽" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="复测结论">
+              <el-radio-group v-model="resurveyForm.conclusion">
+                <el-radio-button v-for="item in RESURVEY_CONCLUSIONS" :key="item" :value="item">{{ item }}</el-radio-button>
+              </el-radio-group>
+            </el-form-item>
+          </el-col>
+        </el-row>
+        <el-form-item label="备注">
+          <el-input v-model="resurveyForm.note" type="textarea" :rows="2" placeholder="复测方式、异常测点处理、误差分配说明等" />
+        </el-form-item>
+        <div class="actions">
+          <el-button type="primary" :disabled="!selectedSegmentId" @click="submitResurvey">登记复测记录</el-button>
+          <span class="muted">
+            登记时闭合差快照取当前已保存测点：{{ savedClosureResult.closure.toFixed(3) }} m（阈值 {{ savedClosureResult.threshold }} m）；
+            结论为「通过」且最新闭合差回到阈值内，洞段状态才记为「已完成」。
+          </span>
+        </div>
+      </el-form>
+    </el-card>
+    <el-table :data="segmentResurveys" border stripe>
+      <el-table-column prop="date" label="复测日期" width="120" />
+      <el-table-column prop="reviewer" label="复核负责人" width="110" />
+      <el-table-column label="结论" width="100">
+        <template #default="{ row }: { row: ResurveyRecord }">
+          <el-tag :type="row.conclusion === '通过' ? 'success' : 'danger'" size="small" effect="plain">
+            {{ row.conclusion }}
+          </el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column label="登记时闭合差(m)" width="140">
+        <template #default="{ row }: { row: ResurveyRecord }">
+          <span :class="{ 'over-text': row.closure >= savedClosureResult.threshold }">{{ row.closure.toFixed(3) }}</span>
+        </template>
+      </el-table-column>
+      <el-table-column prop="note" label="备注" min-width="200" show-overflow-tooltip />
+      <el-table-column label="操作" width="100" fixed="right">
+        <template #default="{ row }: { row: ResurveyRecord }">
+          <el-button link type="danger" size="small" @click="removeResurvey(row)">删除</el-button>
+        </template>
+      </el-table-column>
+      <template #empty>该洞段暂无复测记录，状态为「待复核」</template>
+    </el-table>
   </div>
 </template>
 
@@ -352,6 +480,10 @@ async function removeStation(station: Station): Promise<void> {
 }
 .alert {
   margin-bottom: 12px;
+}
+.over-text {
+  color: #c0392b;
+  font-weight: 600;
 }
 :deep(.abnormal-row) {
   background: #fdf2f2 !important;

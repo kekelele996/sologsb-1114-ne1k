@@ -28,8 +28,6 @@ export interface Segment {
   avgHeight: number
   /** 坡度趋势描述 */
   slopeTrend: string
-  /** 是否已闭合 */
-  closed: boolean
   /** 草图序号 */
   sketchNo: string
 }

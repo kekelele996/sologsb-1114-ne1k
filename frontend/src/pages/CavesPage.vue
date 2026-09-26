@@ -7,11 +7,14 @@ import { useStore } from '@/hooks/usePersistentStore'
 import { caveStore } from '@/stores/caveStore'
 import { segmentStore } from '@/stores/segmentStore'
 import { stationStore } from '@/stores/stationStore'
+import { resurveyStore } from '@/stores/resurveyStore'
+import { resolveSegmentReview } from '@/utils/review'
 import { uid } from '@/utils/id'
 
 const caveState = useStore(caveStore)
 const segmentState = useStore(segmentStore)
 const stationState = useStore(stationStore)
+const resurveyState = useStore(resurveyStore)
 
 const showArchived = ref(false)
 const dialogVisible = ref(false)
@@ -50,6 +53,13 @@ function lastSurveyDate(caveId: string): string {
     .filter(Boolean)
   if (dates.length === 0) return '暂无测点'
   return dates.sort()[dates.length - 1]
+}
+
+/** 待办洞段数：复核状态未达到「已完成」的洞段都计入 */
+function todoCount(caveId: string): number {
+  return segmentsOf(caveId).filter(
+    (segment) => resolveSegmentReview(segment.id, stationState.stations, resurveyState.resurveys).todo
+  ).length
 }
 
 function resetForm(): void {
@@ -171,6 +181,10 @@ async function removeCave(cave: Cave): Promise<void> {
             <b>{{ segmentsOf(cave.id).length }}</b>
           </div>
           <div class="metric">
+            <span>待办洞段</span>
+            <b :class="{ danger: todoCount(cave.id) > 0 }">{{ todoCount(cave.id) }}</b>
+          </div>
+          <div class="metric">
             <span>最近测量</span>
             <b>{{ lastSurveyDate(cave.id) }}</b>
           </div>
@@ -284,6 +298,9 @@ async function removeCave(cave: Cave): Promise<void> {
 .metric b {
   font-size: 14px;
   color: #1f3a4d;
+}
+.metric b.danger {
+  color: #c0392b;
 }
 .desc {
   margin-bottom: 12px;
